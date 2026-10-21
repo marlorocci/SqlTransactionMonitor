@@ -1,0 +1,232 @@
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.IO;
+using System.Windows;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using LiveChartsCore;
+using LiveChartsCore.Defaults;
+using LiveChartsCore.SkiaSharpView;
+using Microsoft.Win32;
+using SqlTransactionMonitor.Models;
+using SqlTransactionMonitor.Services;
+
+namespace SqlTransactionMonitor.ViewModels;
+
+public partial class MainViewModel : ObservableObject
+{
+    private readonly SqlMonitoringService _sql = new();
+    private readonly HistoryRepository _history = new();
+    private CancellationTokenSource? _monitorCts;
+    private Task? _monitorTask;
+    private long? _previousCounter;
+    private DateTime? _previousTimeUtc;
+    private readonly ObservableCollection<double> _chartValues = new();
+    private readonly ObservableCollection<string> _labels = new();
+
+    public ObservableCollection<TransactionSample> Samples { get; } = new();
+    public ISeries[] Series { get; }
+
+    public Axis[] XAxes { get; }
+    public Axis[] YAxes { get; }
+
+    [ObservableProperty] private string serverName = "localhost";
+    [ObservableProperty] private string databaseName = "master";
+    [ObservableProperty] private string userName = string.Empty;
+    [ObservableProperty] private string password = string.Empty;
+    [ObservableProperty] private bool useWindowsAuthentication = true;
+    [ObservableProperty] private bool isConnected;
+    [ObservableProperty] private bool isMonitoring;
+    [ObservableProperty] private string statusText = "Not connected";
+    [ObservableProperty] private double currentTransactionsPerMinute;
+    public string DatabasePath => _history.DatabasePath;
+    public string MonitorButtonText => IsMonitoring ? "Stop Monitoring" : "Start Monitoring";
+
+    public MainViewModel()
+    {
+        Series =
+        [
+            new LineSeries<double>
+        {
+            Values = _chartValues,
+            Name = "Transactions/Min",
+            GeometrySize = 4,
+            Fill = null
+        }
+        ];
+
+        XAxes =
+        [
+            new Axis
+        {
+            Labels = _labels
+        }
+        ];
+
+        YAxes =
+        [
+            new Axis
+        {
+            Name = "Transactions / Minute"
+        }
+        ];
+    }
+
+    private async Task InitializeAsync()
+    {
+        try { await _history.InitializeAsync(); OnPropertyChanged(nameof(DatabasePath)); }
+        catch (Exception ex) { StatusText = $"SQLite initialization failed: {ex.Message}"; }
+    }
+
+    [RelayCommand]
+    private async Task ConnectAsync()
+    {
+        try
+        {
+            StatusText = "Connecting...";
+            await StopMonitoringInternalAsync();
+            await _sql.ConnectAsync(ServerName.Trim(), DatabaseName.Trim(), UserName, Password, UseWindowsAuthentication, CancellationToken.None);
+            IsConnected = true;
+            Password = string.Empty;
+            StatusText = $"Connected to {ServerName} / {DatabaseName}";
+            await LoadHistoryAsync();
+        }
+        catch (Exception ex)
+        {
+            IsConnected = false;
+            StatusText = $"Connection failed: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
+    private async Task ToggleMonitoringAsync()
+    {
+        if (IsMonitoring) await StopMonitoringInternalAsync();
+        else StartMonitoring();
+    }
+
+    private void StartMonitoring()
+    {
+        if (!IsConnected) { StatusText = "Connect to SQL Server first."; return; }
+        _previousCounter = null;
+        _previousTimeUtc = null;
+        _monitorCts = new CancellationTokenSource();
+        IsMonitoring = true;
+        OnPropertyChanged(nameof(MonitorButtonText));
+        StatusText = "Monitoring. The first data point appears after two counter reads.";
+        _monitorTask = MonitorLoopAsync(_monitorCts.Token);
+    }
+
+    private async Task MonitorLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                var now = DateTime.UtcNow;
+                var counter = await _sql.GetCounterValueAsync(DatabaseName.Trim(), token);
+                if (_previousCounter.HasValue && _previousTimeUtc.HasValue)
+                {
+                    var elapsedMinutes = (now - _previousTimeUtc.Value).TotalMinutes;
+                    if (counter >= _previousCounter.Value && elapsedMinutes > 0)
+                    {
+                        var tpm = (counter - _previousCounter.Value) / elapsedMinutes;
+                        var sample = new TransactionSample { TimestampUtc = now, TransactionsPerMinute = tpm, CounterValue = counter };
+                        await _history.AddAsync(ServerName.Trim(), DatabaseName.Trim(), sample);
+                        Application.Current.Dispatcher.Invoke(() => AddSample(sample));
+                        CurrentTransactionsPerMinute = tpm;
+                        StatusText = $"Monitoring {DatabaseName}. Last sample: {tpm:N1} transactions/min";
+                    }
+                    else StatusText = "SQL counter reset detected. The interval was discarded.";
+                }
+                _previousCounter = counter;
+                _previousTimeUtc = now;
+                await Task.Delay(TimeSpan.FromMinutes(1), token);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            StatusText = $"Monitoring stopped: {ex.Message}";
+            IsConnected = _sql.IsConnected;
+        }
+        finally
+        {
+            IsMonitoring = false;
+            OnPropertyChanged(nameof(MonitorButtonText));
+        }
+    }
+
+    private async Task StopMonitoringInternalAsync()
+    {
+        if (_monitorCts is not null)
+        {
+            _monitorCts.Cancel();
+            if (_monitorTask is not null)
+            {
+                try { await _monitorTask; } catch (OperationCanceledException) { }
+            }
+            _monitorCts.Dispose();
+            _monitorCts = null;
+            _monitorTask = null;
+        }
+        IsMonitoring = false;
+        OnPropertyChanged(nameof(MonitorButtonText));
+        await Task.CompletedTask;
+    }
+
+    private async Task LoadHistoryAsync()
+    {
+        var data = await _history.LoadAsync(ServerName.Trim(), DatabaseName.Trim());
+        Samples.Clear();
+        _chartValues.Clear();
+        foreach (var item in data) AddSample(item);
+        if (Samples.Count > 0) CurrentTransactionsPerMinute = Samples[^1].TransactionsPerMinute;
+    }
+
+    private void AddSample(TransactionSample sample)
+    {
+        Samples.Add(sample);                // DataGrid
+
+        _chartValues.Add(sample.TransactionsPerMinute); // Graph
+
+        _labels.Add(
+            sample.TimestampLocal.ToString("MM-dd HH:mm"));
+
+        while (Samples.Count > 0 &&
+               Samples[0].TimestampUtc < DateTime.UtcNow.AddDays(-7))
+        {
+            Samples.RemoveAt(0);
+
+            if (_chartValues.Count > 0)
+                _chartValues.RemoveAt(0);
+
+            if (_labels.Count > 0)
+                _labels.RemoveAt(0);
+        }
+    }
+
+    [RelayCommand]
+    private async Task ExportCsvAsync()
+    {
+        if (Samples.Count == 0) { StatusText = "There is no data to export."; return; }
+        var dialog = new SaveFileDialog
+        {
+            Filter = "CSV files (*.csv)|*.csv",
+            FileName = $"SqlTransactions_{Sanitize(ServerName)}_{Sanitize(DatabaseName)}_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
+        };
+        if (dialog.ShowDialog() != true) return;
+        await using var writer = new StreamWriter(dialog.FileName, false, new System.Text.UTF8Encoding(true));
+        await writer.WriteLineAsync("TimestampLocal,TimestampUtc,Server,Database,TransactionsPerMinute,CounterValue");
+        foreach (var sample in Samples)
+        {
+            await writer.WriteLineAsync(string.Join(',',
+                Csv(sample.TimestampLocal.ToString("O")), Csv(sample.TimestampUtc.ToString("O")),
+                Csv(ServerName), Csv(DatabaseName), sample.TransactionsPerMinute.ToString("F3", CultureInfo.InvariantCulture), sample.CounterValue));
+        }
+        StatusText = $"Exported {Samples.Count} samples to {dialog.FileName}";
+    }
+
+    private static string Csv(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
+    private static string Sanitize(string value) => string.Concat(value.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+}
