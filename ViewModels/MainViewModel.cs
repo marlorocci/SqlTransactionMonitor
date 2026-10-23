@@ -116,18 +116,33 @@ public partial class MainViewModel : ObservableObject
         try { await _history.InitializeAsync(); OnPropertyChanged(nameof(DatabasePath)); }
         catch (Exception ex) { StatusText = $"SQLite initialization failed: {ex.Message}"; }
     }
-
     [RelayCommand]
     private async Task ConnectAsync()
     {
         try
         {
+            StatusText = "Initializing local database...";
+
+            // Guarantees database + Samples table exist.
+            await _history.InitializeAsync();
+
             StatusText = "Connecting...";
+
             await StopMonitoringInternalAsync();
-            await _sql.ConnectAsync(ServerName.Trim(), DatabaseName.Trim(), UserName, Password, UseWindowsAuthentication, CancellationToken.None);
+
+            await _sql.ConnectAsync(
+                ServerName.Trim(),
+                DatabaseName.Trim(),
+                UserName,
+                Password,
+                UseWindowsAuthentication,
+                CancellationToken.None);
+
             IsConnected = true;
             Password = string.Empty;
+
             StatusText = $"Connected to {ServerName} / {DatabaseName}";
+
             await LoadHistoryAsync();
         }
         catch (Exception ex)

@@ -39,24 +39,23 @@ public sealed class HistoryRepository
     }
 
 
+    private bool _initialized;
 
     public async Task InitializeAsync()
     {
-        // Create the application data folder if it does not exist.
-        var directory = Path.GetDirectoryName(DatabasePath);
+        if (_initialized)
+            return;
 
-        if (!Directory.Exists(directory))
-        {
-            Directory.CreateDirectory(directory!);
-        }
+        Directory.CreateDirectory(
+            Path.GetDirectoryName(DatabasePath)!);
 
-        // SQLite automatically creates the database file when OpenAsync()
-        // is called if the file does not already exist.
-        await using var connection = new SqliteConnection(ConnectionString);
+        await using var connection =
+            new SqliteConnection(ConnectionString);
+
         await connection.OpenAsync();
 
-        // Create the table and index if they do not already exist.
-        var command = connection.CreateCommand();
+        await using var command =
+            connection.CreateCommand();
 
         command.CommandText = """
         CREATE TABLE IF NOT EXISTS Samples
@@ -80,12 +79,15 @@ public sealed class HistoryRepository
 
         await command.ExecuteNonQueryAsync();
 
-        // Remove data older than seven days.
+        _initialized = true;
+
         await PurgeOldAsync();
     }
 
+
     public async Task AddAsync(string server, string database, TransactionSample sample)
     {
+        await InitializeAsync();
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync();
         var command = connection.CreateCommand();
@@ -103,6 +105,7 @@ public sealed class HistoryRepository
 
     public async Task<List<TransactionSample>> LoadAsync(string server, string database)
     {
+        await InitializeAsync();
         var result = new List<TransactionSample>();
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync();
