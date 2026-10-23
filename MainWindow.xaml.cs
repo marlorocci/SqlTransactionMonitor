@@ -11,7 +11,7 @@ public partial class MainWindow : Window
     private MainViewModel ViewModel => (MainViewModel)DataContext;
     public MainWindow()
     {
-        Resources["InverseBooleanConverter"] = new InverseBooleanConverter();
+        //Resources["InverseBooleanConverter"] = new InverseBooleanConverter();
         InitializeComponent();
         DataContext = new MainViewModel();
     }

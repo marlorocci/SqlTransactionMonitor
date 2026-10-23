@@ -42,6 +42,45 @@ public partial class MainViewModel : ObservableObject
     public string DatabasePath => _history.DatabasePath;
     public string MonitorButtonText => IsMonitoring ? "Stop Monitoring" : "Start Monitoring";
 
+    [RelayCommand]
+    private async Task ClearDatabaseDataAsync()
+    {
+        try
+        {
+            var result = MessageBox.Show(
+                "This will permanently delete all transaction history from the SQLite database.\n\n" +
+                "The SQLite database itself will remain in place.\n\n" +
+                "Do you want to continue?",
+                "Clear Database Data",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+
+            if (result != MessageBoxResult.Yes)
+                return;
+
+            await _history.ClearAllDataAsync();
+
+            Samples.Clear();
+            _chartValues.Clear();
+            _labels.Clear();
+
+            CurrentTransactionsPerMinute = 0;
+
+            StatusText = "All transaction history has been cleared.";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Unable to clear database data: {ex.Message}";
+
+            MessageBox.Show(
+                ex.Message,
+                "Clear Database Data Failed",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
     public MainViewModel()
     {
         Series =

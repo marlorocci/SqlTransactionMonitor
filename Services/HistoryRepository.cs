@@ -6,28 +6,81 @@ namespace SqlTransactionMonitor.Services;
 
 public sealed class HistoryRepository
 {
-    public string DatabasePath { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SqlTransactionMonitor", "transactions.db");
+    public string DatabasePath { get; } = CreateDatabasePath();
+
+    private static string CreateDatabasePath()
+    {
+        string folderPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "SqlTransactionMonitor");
+
+        // Create the directory if it doesn't exist.
+        Directory.CreateDirectory(folderPath);
+
+        return Path.Combine(folderPath, "transactions.db");
+    }
+
     private string ConnectionString => $"Data Source={DatabasePath}";
+
+    public async Task ClearAllDataAsync()
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync();
+
+        var command = connection.CreateCommand();
+
+        command.CommandText = """
+        DELETE FROM Samples;
+        DELETE FROM sqlite_sequence
+        WHERE name = 'Samples';
+        """;
+
+        await command.ExecuteNonQueryAsync();
+    }
+
+
 
     public async Task InitializeAsync()
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
+        // Create the application data folder if it does not exist.
+        var directory = Path.GetDirectoryName(DatabasePath);
+
+        if (!Directory.Exists(directory))
+        {
+            Directory.CreateDirectory(directory!);
+        }
+
+        // SQLite automatically creates the database file when OpenAsync()
+        // is called if the file does not already exist.
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync();
+
+        // Create the table and index if they do not already exist.
         var command = connection.CreateCommand();
+
         command.CommandText = """
-            CREATE TABLE IF NOT EXISTS Samples (
-                Id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ServerName TEXT NOT NULL,
-                DatabaseName TEXT NOT NULL,
-                TimestampUtc TEXT NOT NULL,
-                TransactionsPerMinute REAL NOT NULL,
-                CounterValue INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS IX_Samples_Target_Time
-            ON Samples(ServerName, DatabaseName, TimestampUtc);
-            """;
+        CREATE TABLE IF NOT EXISTS Samples
+        (
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ServerName TEXT NOT NULL,
+            DatabaseName TEXT NOT NULL,
+            TimestampUtc TEXT NOT NULL,
+            TransactionsPerMinute REAL NOT NULL,
+            CounterValue INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS IX_Samples_Target_Time
+        ON Samples
+        (
+            ServerName,
+            DatabaseName,
+            TimestampUtc
+        );
+        """;
+
         await command.ExecuteNonQueryAsync();
+
+        // Remove data older than seven days.
         await PurgeOldAsync();
     }
 
