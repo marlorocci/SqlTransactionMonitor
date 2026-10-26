@@ -10,11 +10,15 @@ using LiveChartsCore.SkiaSharpView;
 using Microsoft.Win32;
 using SqlTransactionMonitor.Models;
 using SqlTransactionMonitor.Services;
+using System.Diagnostics;
 
 namespace SqlTransactionMonitor.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
+    //public string DatabasePath => _history.DatabasePath;
+
+    public string LogPath => AppLogger.CurrentLogPath;
     private readonly SqlMonitoringService _sql = new();
     private readonly HistoryRepository _history = new();
     private CancellationTokenSource? _monitorCts;
@@ -113,22 +117,52 @@ public partial class MainViewModel : ObservableObject
 
     private async Task InitializeAsync()
     {
-        try { await _history.InitializeAsync(); OnPropertyChanged(nameof(DatabasePath)); }
-        catch (Exception ex) { StatusText = $"SQLite initialization failed: {ex.Message}"; }
+        try
+        {
+            AppLogger.Information(
+                nameof(MainViewModel),
+                "MainViewModel initialization started.");
+
+            await _history.InitializeAsync();
+
+            OnPropertyChanged(nameof(DatabasePath));
+            OnPropertyChanged(nameof(LogPath));
+
+            StatusText = "Ready.";
+
+            AppLogger.Information(
+                nameof(MainViewModel),
+                "MainViewModel initialization completed.");
+        }
+        catch (Exception ex)
+        {
+            StatusText =
+                $"SQLite initialization failed: {ex.Message}";
+
+            AppLogger.Error(
+                nameof(MainViewModel),
+                "MainViewModel initialization failed.",
+                ex);
+        }
     }
     [RelayCommand]
     private async Task ConnectAsync()
     {
+        AppLogger.Information(
+            nameof(MainViewModel),
+            $"Connect selected. Server={ServerName}, " +
+            $"Database={DatabaseName}, " +
+            $"WindowsAuthentication={UseWindowsAuthentication}, " +
+            $"UserName={(UseWindowsAuthentication ? "<Windows>" : UserName)}");
+
         try
         {
             StatusText = "Initializing local database...";
 
-            // Guarantees database + Samples table exist.
             await _history.InitializeAsync();
+            await StopMonitoringInternalAsync();
 
             StatusText = "Connecting...";
-
-            await StopMonitoringInternalAsync();
 
             await _sql.ConnectAsync(
                 ServerName.Trim(),
@@ -141,14 +175,28 @@ public partial class MainViewModel : ObservableObject
             IsConnected = true;
             Password = string.Empty;
 
-            StatusText = $"Connected to {ServerName} / {DatabaseName}";
-
             await LoadHistoryAsync();
+
+            StatusText =
+                $"Connected to {ServerName} / {DatabaseName}";
+
+            AppLogger.Information(
+                nameof(MainViewModel),
+                $"Connection workflow completed successfully. " +
+                $"Server={ServerName}, Database={DatabaseName}");
         }
         catch (Exception ex)
         {
             IsConnected = false;
-            StatusText = $"Connection failed: {ex.Message}";
+
+            StatusText =
+                $"Connection failed: {ex.Message}";
+
+            AppLogger.Error(
+                nameof(MainViewModel),
+                $"Connection workflow failed. " +
+                $"Server={ServerName}, Database={DatabaseName}",
+                ex);
         }
     }
 
@@ -257,6 +305,34 @@ public partial class MainViewModel : ObservableObject
 
             if (_labels.Count > 0)
                 _labels.RemoveAt(0);
+        }
+    }
+
+    [RelayCommand]
+    private void OpenLogFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppLogger.LogDirectory);
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = AppLogger.LogDirectory,
+                UseShellExecute = true
+            });
+
+            AppLogger.Information(
+                nameof(MainViewModel),
+                "Log folder opened by the user.");
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Unable to open log folder: {ex.Message}";
+
+            AppLogger.Error(
+                nameof(MainViewModel),
+                "Unable to open log folder.",
+                ex);
         }
     }
 
